@@ -42,7 +42,7 @@ except ImportError as e:
 class FV3CubeSphere:
     """Class to handle FV3 cube sphere grid operations."""
     
-    def __init__(self, npx=384):
+    def __init__(self, npx=384, orography_file=None):
         """
         Initialize FV3 cube sphere grid.
         
@@ -50,10 +50,13 @@ class FV3CubeSphere:
         -----------
         npx : int
             Number of grid points in each direction (default: 384 for C384)
+        orography_file : str, optional
+            Path to orography file containing geolon/geolat coordinates
         """
         self.npx = npx
         self.npy = npx
         self.ntiles = 6
+        self.orography_file = orography_file
         
     def generate_coordinates(self):
         """
@@ -65,10 +68,36 @@ class FV3CubeSphere:
         """
         coords = {}
         
-        # This is a simplified implementation
-        # In practice, you would need the actual FV3 grid coordinates
-        # from the model's grid files
-        
+        # If orography file is provided, load coordinates from it
+        if self.orography_file and os.path.exists(self.orography_file):
+            try:
+                with xr.open_dataset(self.orography_file) as ds:
+                    if 'geolon' in ds and 'geolat' in ds:
+                        # Load actual coordinates from orography file
+                        geolon = ds['geolon'].values
+                        geolat = ds['geolat'].values
+                        
+                        # For now, assume single tile in orography file
+                        # In practice, you might need to handle multiple tiles
+                        for tile in range(1, 7):
+                            coords[f'tile{tile}'] = {
+                                'lon': geolon,
+                                'lat': geolat
+                            }
+                    else:
+                        logging.warning("geolon/geolat not found in orography file, using placeholder coordinates")
+                        self._generate_placeholder_coordinates(coords)
+            except Exception as e:
+                logging.error(f"Error reading coordinates from orography file: {e}")
+                self._generate_placeholder_coordinates(coords)
+        else:
+            # Generate placeholder coordinates if no orography file
+            self._generate_placeholder_coordinates(coords)
+            
+        return coords
+    
+    def _generate_placeholder_coordinates(self, coords):
+        """Generate placeholder coordinates for all tiles."""
         for tile in range(1, 7):
             # Placeholder for actual cube sphere coordinate calculation
             # These would typically come from the FV3 grid files
@@ -76,8 +105,6 @@ class FV3CubeSphere:
                 'lon': np.zeros((self.npx, self.npy)),
                 'lat': np.zeros((self.npx, self.npy))
             }
-            
-        return coords
 
 
 class GRIB2Reader:
@@ -212,8 +239,15 @@ class VerticalInterpolator:
             # Try to read as netCDF first
             if self.akbk_file.endswith('.nc'):
                 with xr.open_dataset(self.akbk_file) as ds:
-                    self.ak = ds['ak'].values if 'ak' in ds else ds['hyai'].values
-                    self.bk = ds['bk'].values if 'bk' in ds else ds['hybi'].values
+                    if 'vcoord' in ds:
+                        # Format: vcoord(nvcoord, levsp) where ak=vcoord[0,:] and bk=vcoord[1,:]
+                        vcoord = ds['vcoord'].values
+                        self.ak = vcoord[0, :]  # nvcoord=0 for ak
+                        self.bk = vcoord[1, :]  # nvcoord=1 for bk
+                    else:
+                        # Fallback to original variable names
+                        self.ak = ds['ak'].values if 'ak' in ds else ds['hyai'].values
+                        self.bk = ds['bk'].values if 'bk' in ds else ds['hybi'].values
             else:
                 # Try to read as text file
                 data = np.loadtxt(self.akbk_file)
@@ -385,9 +419,14 @@ def load_orography(oro_file):
     try:
         if oro_file.endswith('.nc'):
             with xr.open_dataset(oro_file) as ds:
-                # Assume orography is stored per tile
+                # Load coordinate variables
+                if 'geolon' in ds and 'geolat' in ds:
+                    oro_data['geolon'] = ds['geolon'].values
+                    oro_data['geolat'] = ds['geolat'].values
+                
+                # Load orography/elevation data
                 for var in ds.data_vars:
-                    if 'oro' in var.lower() or 'elevation' in var.lower():
+                    if 'oro' in var.lower() or 'elevation' in var.lower() or 'stddev' in var.lower():
                         oro_data[var] = ds[var].values
         else:
             logging.warning(f"Unsupported orography file format: {oro_file}")
@@ -501,7 +540,7 @@ def main():
         logging.info(f"Processing GRIB2 file: {args.input}")
         
         # Initialize components
-        fv3_grid = FV3CubeSphere(npx=args.npx)
+        fv3_grid = FV3CubeSphere(npx=args.npx, orography_file=args.orography)
         h_interpolator = HorizontalInterpolator(method=args.method)
         v_interpolator = VerticalInterpolator(akbk_file=args.akbk)
         
