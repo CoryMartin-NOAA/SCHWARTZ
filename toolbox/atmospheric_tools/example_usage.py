@@ -21,16 +21,18 @@ def run_example():
     print("=" * 50)
     print()
     
-    # Example 1: Basic usage
-    print("Example 1: Basic regridding")
+    # Example 1: Basic usage with orography files
+    print("Example 1: Basic regridding with orography files")
     print("-" * 30)
     
     sample_input = "gefs.chem.t12z.a3d_0p50.f000.grib2"
     sample_output = "output_tiles"
+    oro_prefix = "C384_oro_"
     
     cmd = [
         sys.executable, str(regrid_script),
         "--input", sample_input,
+        "--orography-prefix", oro_prefix,
         "--output", sample_output,
         "--npx", "384",
         "--method", "linear"
@@ -39,22 +41,27 @@ def run_example():
     print("Command:")
     print(" ".join(cmd))
     print()
-    print("This would:")
-    print("- Read aerosol data from the GEFS chemistry GRIB2 file")
-    print("- Interpolate to C384 FV3 cube sphere grid (6 tiles)")
-    print("- Use linear interpolation method")
-    print("- Save results to output_tiles/ directory")
+    print("This requires orography files:")
+    print("- C384_oro_tile1.nc")
+    print("- C384_oro_tile2.nc")
+    print("- C384_oro_tile3.nc")
+    print("- C384_oro_tile4.nc")
+    print("- C384_oro_tile5.nc")
+    print("- C384_oro_tile6.nc")
+    print()
+    print("Each file must contain geolon and geolat coordinate variables.")
     print()
     
-    # Example 2: With orography and vertical interpolation
-    print("Example 2: With orography and vertical interpolation")
+    # Example 2: With field mapping and vertical interpolation
+    print("Example 2: With field mapping and vertical interpolation")
     print("-" * 30)
     
     cmd2 = [
         sys.executable, str(regrid_script),
         "--input", sample_input,
-        "--orography", "C384_oro_data.nc",
-        "--akbk", "akbk_L127.txt",
+        "--orography-prefix", oro_prefix,
+        "--field-mapping", "aerosol_mapping.yaml",
+        "--akbk", "akbk_L127.nc",
         "--output", sample_output,
         "--npx", "384",
         "--method", "cubic",
@@ -64,15 +71,19 @@ def run_example():
     print("Command:")
     print(" ".join(cmd2))
     print()
-    print("This would:")
-    print("- Read aerosol data from the GEFS chemistry GRIB2 file")
-    print("- Use orography data for terrain-following corrections")
-    print("- Perform vertical interpolation using L127 ak/bk coefficients")
-    print("- Use cubic interpolation for better accuracy")
-    print("- Enable verbose logging")
+    print("This requires:")
+    print("- Orography files for each tile")
+    print("- aerosol_mapping.yaml file with field mappings")
+    print("- akbk_L127.nc file with ak/bk coefficients")
+    print()
+    print("Example aerosol_mapping.yaml:")
+    print("---")
+    print('"Mass Density": "dust"')
+    print('"Aerosol Optical Depth": "aod"')
+    print('"Sulfate": "so4"')
     print()
     
-    # Example 3: Different grid resolutions
+    # Example 3: Different grid resolutions  
     print("Example 3: Different grid resolutions")
     print("-" * 30)
     
@@ -82,6 +93,7 @@ def run_example():
         cmd3 = [
             sys.executable, str(regrid_script),
             "--input", sample_input,
+            "--orography-prefix", f"C{res}_oro_",
             "--output", f"output_C{res}",
             "--npx", str(res)
         ]

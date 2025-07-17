@@ -19,6 +19,7 @@ try:
     import numpy as np
     import xarray as xr
     import grib2io
+    import yaml
     from scipy.interpolate import RegularGridInterpolator, interp1d
     from scipy.spatial.distance import cdist
     DEPENDENCIES_AVAILABLE = True
@@ -42,7 +43,7 @@ except ImportError as e:
 class FV3CubeSphere:
     """Class to handle FV3 cube sphere grid operations."""
     
-    def __init__(self, npx=384, orography_file=None):
+    def __init__(self, npx=384, orography_prefix=None):
         """
         Initialize FV3 cube sphere grid.
         
@@ -50,13 +51,13 @@ class FV3CubeSphere:
         -----------
         npx : int
             Number of grid points in each direction (default: 384 for C384)
-        orography_file : str, optional
-            Path to orography file containing geolon/geolat coordinates
+        orography_prefix : str, optional
+            Prefix for orography files, will look for {prefix}tile{N}.nc files
         """
         self.npx = npx
         self.npy = npx
         self.ntiles = 6
-        self.orography_file = orography_file
+        self.orography_prefix = orography_prefix
         
     def generate_coordinates(self):
         """
@@ -68,49 +69,44 @@ class FV3CubeSphere:
         """
         coords = {}
         
-        # If orography file is provided, load coordinates from it
-        if self.orography_file and os.path.exists(self.orography_file):
+        # Orography files are required - each tile has its own file
+        if not self.orography_prefix:
+            raise ValueError("Orography prefix is required. Each tile needs its own orography file.")
+        
+        # Load coordinates from each tile's orography file
+        for tile in range(1, 7):
+            tile_file = f"{self.orography_prefix}tile{tile}.nc"
+            
+            if not os.path.exists(tile_file):
+                raise FileNotFoundError(f"Orography file not found: {tile_file}")
+            
             try:
-                with xr.open_dataset(self.orography_file) as ds:
-                    if 'geolon' in ds and 'geolat' in ds:
-                        # Load actual coordinates from orography file
-                        geolon = ds['geolon'].values
-                        geolat = ds['geolat'].values
-                        
-                        # For now, assume single tile in orography file
-                        # In practice, you might need to handle multiple tiles
-                        for tile in range(1, 7):
-                            coords[f'tile{tile}'] = {
-                                'lon': geolon,
-                                'lat': geolat
-                            }
-                    else:
-                        logging.warning("geolon/geolat not found in orography file, using placeholder coordinates")
-                        self._generate_placeholder_coordinates(coords)
+                with xr.open_dataset(tile_file) as ds:
+                    if 'geolon' not in ds or 'geolat' not in ds:
+                        raise ValueError(f"geolon/geolat coordinates not found in {tile_file}")
+                    
+                    # Load coordinates for this tile
+                    geolon = ds['geolon'].values
+                    geolat = ds['geolat'].values
+                    
+                    coords[f'tile{tile}'] = {
+                        'lon': geolon,
+                        'lat': geolat
+                    }
+                    
+                    logging.info(f"Loaded coordinates from {tile_file}: {geolon.shape}")
+                    
             except Exception as e:
-                logging.error(f"Error reading coordinates from orography file: {e}")
-                self._generate_placeholder_coordinates(coords)
-        else:
-            # Generate placeholder coordinates if no orography file
-            self._generate_placeholder_coordinates(coords)
+                raise RuntimeError(f"Error reading coordinates from {tile_file}: {e}")
             
         return coords
-    
-    def _generate_placeholder_coordinates(self, coords):
-        """Generate placeholder coordinates for all tiles."""
-        for tile in range(1, 7):
-            # Placeholder for actual cube sphere coordinate calculation
-            # These would typically come from the FV3 grid files
-            coords[f'tile{tile}'] = {
-                'lon': np.zeros((self.npx, self.npy)),
-                'lat': np.zeros((self.npx, self.npy))
-            }
+
 
 
 class GRIB2Reader:
     """Class to handle GRIB2 file reading and processing."""
     
-    def __init__(self, filename):
+    def __init__(self, filename, field_mapping=None):
         """
         Initialize GRIB2 reader.
         
@@ -118,9 +114,12 @@ class GRIB2Reader:
         -----------
         filename : str
             Path to GRIB2 file
+        field_mapping : dict, optional
+            Dictionary mapping GRIB2 field names to output variable names
         """
         self.filename = filename
         self.grib_file = None
+        self.field_mapping = field_mapping or {}
         
     def __enter__(self):
         """Context manager entry."""
@@ -161,8 +160,9 @@ class GRIB2Reader:
                     data = msg.data()
                     lats, lons = msg.latlons()
                     
-                    # Store the data
-                    field_key = f"{param_name}_{level_type}_{level}"
+                    # Store the data with mapped variable name if available
+                    output_var_name = self.field_mapping.get(param_name, param_name)
+                    field_key = f"{output_var_name}_{level_type}_{level}"
                     aerosol_data[field_key] = {
                         'data': data,
                         'lats': lats,
@@ -170,6 +170,7 @@ class GRIB2Reader:
                         'level': level,
                         'level_type': level_type,
                         'param_name': param_name,
+                        'output_var_name': output_var_name,
                         'units': getattr(msg, 'units', 'unknown')
                     }
                     
@@ -436,6 +437,34 @@ def load_orography(oro_file):
     return oro_data
 
 
+def load_field_mapping(mapping_file):
+    """
+    Load field mapping from YAML file.
+    
+    Parameters:
+    -----------
+    mapping_file : str
+        Path to YAML mapping file
+        
+    Returns:
+    --------
+    dict : Field mapping dictionary
+    """
+    field_mapping = {}
+    
+    try:
+        with open(mapping_file, 'r') as f:
+            field_mapping = yaml.safe_load(f)
+        
+        logging.info(f"Loaded field mapping with {len(field_mapping)} entries")
+        
+    except Exception as e:
+        logging.error(f"Error loading field mapping: {e}")
+        raise
+        
+    return field_mapping
+
+
 def save_output(data, output_dir, filename_template="aerosol_tile{tile}.nc"):
     """
     Save regridded data to netCDF files.
@@ -492,8 +521,10 @@ def main():
     
     parser.add_argument('--input', '-i', required=True,
                        help='Input GRIB2 file path')
-    parser.add_argument('--orography', '-o', 
-                       help='Orography file path')
+    parser.add_argument('--orography-prefix', '-o', required=True,
+                       help='Orography file prefix (will look for {prefix}tile{N}.nc files)')
+    parser.add_argument('--field-mapping', '-m',
+                       help='YAML file mapping GRIB2 field names to output variable names')
     parser.add_argument('--akbk', '-a',
                        help='ak/bk coefficients file path')
     parser.add_argument('--output', '-out', required=True,
@@ -530,32 +561,33 @@ def main():
             print(f"  Output directory: {args.output}")
             print(f"  Grid resolution: C{args.npx}")
             print(f"  Interpolation method: {args.method}")
-            if args.orography:
-                print(f"  Orography file: {args.orography}")
+            print(f"  Orography prefix: {args.orography_prefix}")
+            if args.field_mapping:
+                print(f"  Field mapping: {args.field_mapping}")
             if args.akbk:
                 print(f"  ak/bk coefficients: {args.akbk}")
             return 0
         
         logging.info(f"Processing GRIB2 file: {args.input}")
         
+        # Load field mapping if provided
+        field_mapping = {}
+        if args.field_mapping:
+            logging.info(f"Loading field mapping from: {args.field_mapping}")
+            field_mapping = load_field_mapping(args.field_mapping)
+        
         # Initialize components
-        fv3_grid = FV3CubeSphere(npx=args.npx, orography_file=args.orography)
+        fv3_grid = FV3CubeSphere(npx=args.npx, orography_prefix=args.orography_prefix)
         h_interpolator = HorizontalInterpolator(method=args.method)
         v_interpolator = VerticalInterpolator(akbk_file=args.akbk)
         
-        # Generate FV3 coordinates (placeholder - would need actual grid files)
-        logging.info("Generating FV3 cube sphere coordinates...")
+        # Generate FV3 coordinates from orography files
+        logging.info("Loading FV3 cube sphere coordinates from orography files...")
         target_coords = fv3_grid.generate_coordinates()
-        
-        # Load orography if provided
-        oro_data = {}
-        if args.orography:
-            logging.info(f"Loading orography from: {args.orography}")
-            oro_data = load_orography(args.orography)
         
         # Read GRIB2 data
         logging.info("Reading GRIB2 aerosol data...")
-        with GRIB2Reader(args.input) as reader:
+        with GRIB2Reader(args.input, field_mapping=field_mapping) as reader:
             aerosol_data = reader.get_aerosol_fields()
         
         if not aerosol_data:
