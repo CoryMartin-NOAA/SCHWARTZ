@@ -18,7 +18,7 @@ import logging
 try:
     import numpy as np
     import xarray as xr
-    import pygrib
+    import grib2io
     from scipy.interpolate import RegularGridInterpolator, interp1d
     from scipy.spatial.distance import cdist
     DEPENDENCIES_AVAILABLE = True
@@ -125,7 +125,7 @@ class GRIB2Reader:
     def __enter__(self):
         """Context manager entry."""
         try:
-            self.grib_file = pygrib.open(self.filename)
+            self.grib_file = grib2io.open(self.filename)
             return self
         except Exception as e:
             raise IOError(f"Error opening GRIB2 file {self.filename}: {e}")
@@ -146,10 +146,8 @@ class GRIB2Reader:
         aerosol_data = {}
         
         try:
-            # Get all messages in the file
-            messages = self.grib_file.read()
-            
-            for msg in messages:
+            # Iterate through all messages in the file
+            for msg in self.grib_file:
                 # Look for aerosol-related parameters
                 param_name = getattr(msg, 'parameterName', None)
                 short_name = getattr(msg, 'shortName', None)
@@ -159,8 +157,9 @@ class GRIB2Reader:
                     level = getattr(msg, 'level', 0)
                     level_type = getattr(msg, 'levelType', 'unknown')
                     
-                    # Get data and coordinates
-                    data, lats, lons = msg.data()
+                    # Get data and coordinates using grib2io API
+                    data = msg.data()
+                    lats, lons = msg.latlons()
                     
                     # Store the data
                     field_key = f"{param_name}_{level_type}_{level}"
@@ -524,7 +523,7 @@ def main():
         # Check if dependencies are available for full functionality
         if not DEPENDENCIES_AVAILABLE:
             print("\nWarning: Scientific computing dependencies not available.")
-            print("Cannot process GRIB2 files without numpy, xarray, pygrib, etc.")
+            print("Cannot process GRIB2 files without numpy, xarray, grib2io, etc.")
             print("Please install dependencies using: pip install -r requirements.txt")
             print("\nFor demonstration purposes, showing what would be processed:")
             print(f"  Input file: {args.input}")
